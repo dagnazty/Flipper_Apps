@@ -1,0 +1,15 @@
+App(
+    appid="pword",  # Must be unique
+    name="pword",  # Displayed in menus
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="main_app",
+    stack_size=2 * 1024,
+    fap_category="Examples",
+    # Optional values
+    # fap_version="0.1",
+    fap_icon="pword.png",  # 10x10 1-bit PNG
+    fap_description="A simple password generator.",
+    fap_author="dag",
+    # fap_weburl="https://github.com/user/pword",
+    fap_icon_assets="images",  # Image assets to compile for this application
+)
