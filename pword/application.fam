@@ -10,6 +10,6 @@ App(
     fap_icon="pword.png",  # 10x10 1-bit PNG
     fap_description="A simple password generator.",
     fap_author="dag",
-    # fap_weburl="https://github.com/user/pword",
+    # fap_weburl="https://github.com/dagnazty/Flipper_Apps/blob/main/pword",
     fap_icon_assets="images",  # Image assets to compile for this application
 )
