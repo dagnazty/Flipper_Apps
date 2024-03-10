@@ -4,12 +4,12 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="main_app",
     stack_size=2 * 1024,
-    fap_category="Examples",
+    fap_category="Tools",
     # Optional values
-    # fap_version="0.1",
+    # fap_version="0.2",
     fap_icon="pword.png",  # 10x10 1-bit PNG
-    fap_description="A simple password generator.",
-    fap_author="dag",
+    fap_description="A password generator.",
+    fap_author="@dagnazty",
     # fap_weburl="https://github.com/dagnazty/Flipper_Apps/blob/main/pword",
-    fap_icon_assets="images",  # Image assets to compile for this application
+    fap_icon_assets="assets",  # Image assets to compile for this application
 )

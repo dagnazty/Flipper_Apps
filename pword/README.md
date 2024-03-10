@@ -1,25 +1,34 @@
 # pword
-This application for the Flipper Zero generates random strings of 8 or 16 characters and provides a simple menu to navigate through.
+`pword` is a simple yet powerful password generator designed for [Flipper Zero](https://flipperzero.one/) devices. It allows users to generate random, strong, and customizable passwords on the go.
 
 ## How It Works
 
 Upon launching the app, the user is presented with a menu to select the desired action:
-1. Generate an 8-character random string
-2. Generate a 16-character random string
-3. View the About page
+1. Generate a customizable random password
+2. View the About page
+
+![1p](https://raw.githubusercontent.com/dagnazty/Flipper_Apps/main/pword/images/4.png)
 
 The application utilizes the device's hardware buttons for navigation:
-- **Up/Down** to navigate through the menu
-- **OK** to select an option or generate a new string in the string generation view
-- **Left/Right** in the string generation view to generate a new random string
+- **Up/Down** arrows to switch between different character sets
+- **OK** button to generate a new password
+- **Left/Right** arrows to adjust the password length
 - **Back** to return to the previous menu or exit the app
+- The generated password will also be printed to the client log for retrieval
+
+![2p](https://raw.githubusercontent.com/dagnazty/Flipper_Apps/main/pword/images/1.png)
+
+![3p](https://raw.githubusercontent.com/dagnazty/Flipper_Apps/main/pword/images/2.png)
+
+![4p](https://raw.githubusercontent.com/dagnazty/Flipper_Apps/main/pword/images/3.png)
 
 ## Technical Details
 
 - The app is written in C, tested on OFW and Momentum Firmware.
-- Random strings are generated from a predefined charset, ensuring a mix of upper and lower case letters, numbers, and special characters.
-- The application state is managed through an enum, allowing for clear transitions between menu navigation, string generation, and viewing the About page.
-- Utilizes dynamic memory allocation for the application context, ensuring clean setup and teardown of the app's resources.
+
+[Official Firmware](https://github.com/flipperdevices/flipperzero-firmware)
+
+[Momemntum Firmware](https://github.com/Next-Flip/Momentum-Firmware)
 
 ## Installation
 
@@ -31,7 +40,7 @@ To install this app on your Flipper Zero:
    Mac/Linux: ```python3 -m pip install --upgrade ufbt```
 4. Build the application using the Flipper Zero SDK: ```ufbt build```
 5. To install the application onto your Flipper Zero, use the ufbt tool with the following command: ```ufbt install```
-6. Look for app in Apps/Examples.
+6. Look for pword in Apps/Tools.
 
 ## Contributing
 
@@ -43,7 +52,7 @@ This project is licensed under the GNU License. See the LICENSE file for details
 
 ## Acknowledgments
 
-- Developed by dag
+- Developed by [dagnazty](https://github.com/dagnazty)
 - Thanks to the Flipper Zero community for their support and contributions.
 
 For any questions or suggestions, please open an issue in the GitHub repository.
