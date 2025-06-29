@@ -52,7 +52,7 @@ The Evil BW16 Controller allows you to control an Evil-BW16 WiFi deauther module
 ### Method 1: Using ufbt (Recommended)
 1. Install ufbt (micro Flipper Build Tool):
    ```bash
-   pip3 install --upgrade ufbt
+   pip install --upgrade ufbt
    ```
 
 2. Navigate to the Evil-Fap directory and build:
