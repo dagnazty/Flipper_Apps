@@ -4,6 +4,8 @@
 
 #define BAUDRATE (115200)
 #define RX_BUFFER_SIZE (512)
+#define MAX_RECENT_COMMANDS 10
+#define COMMAND_ECHO_TIMEOUT_MS 1000
 
 // Forward declarations for response handler functions
 static void handle_info_response(EvilBw16UartWorker* worker, const char* line);
@@ -15,6 +17,8 @@ static void handle_data_response(EvilBw16UartWorker* worker, const char* line);
 static void handle_hop_response(EvilBw16UartWorker* worker, const char* line);
 static void handle_generic_response(EvilBw16UartWorker* worker, const char* line);
 static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line);
+static bool is_command_echo(EvilBw16UartWorker* worker, const char* line);
+static void store_sent_command(EvilBw16UartWorker* worker, const char* command);
 
 struct EvilBw16UartWorker {
     FuriThread* thread;
@@ -23,6 +27,9 @@ struct EvilBw16UartWorker {
     bool running;
     EvilBw16App* app;
     FuriMutex* tx_mutex;
+    char recent_commands[MAX_RECENT_COMMANDS][64];
+    uint32_t command_timestamps[MAX_RECENT_COMMANDS];
+    int recent_command_index;
 };
 
 static EvilBw16UartWorker* uart_worker = NULL;
@@ -57,39 +64,69 @@ static int32_t uart_worker_thread(void* context) {
                 if(line_pos > 0) {
                     line_buffer[line_pos] = '\0';
                     
+                    // Skip empty lines
+                    if(strlen(line_buffer) == 0) {
+                        line_pos = 0;
+                        continue;
+                    }
+                    
                     // Process complete line
                     FURI_LOG_I("EvilBw16", "RX: %s", line_buffer);
                     
-                    // Parse different response types
-                    if(strstr(line_buffer, "[INFO]") == line_buffer) {
-                        handle_info_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[ERROR]") == line_buffer) {
-                        handle_error_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[DEBUG]") == line_buffer) {
-                        handle_debug_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[CMD]") == line_buffer) {
-                        handle_cmd_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[MGMT]") == line_buffer) {
-                        handle_mgmt_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[DATA]") == line_buffer) {
-                        handle_data_response(worker, line_buffer);
-                    }
-                    else if(strstr(line_buffer, "[HOP]") == line_buffer) {
-                        handle_hop_response(worker, line_buffer);
-                    }
-                    else {
-                        // Generic response
-                        handle_generic_response(worker, line_buffer);
+                    // Check if this is a command echo - if so, only skip response processing, not display
+                    bool is_echo = is_command_echo(worker, line_buffer);
+                    
+                    // Parse different response types only if not an echo
+                    if(!is_echo) {
+                        if(strncmp(line_buffer, "[INFO]", 6) == 0) {
+                            handle_info_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[ERROR]", 7) == 0) {
+                            handle_error_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[DEBUG]", 7) == 0) {
+                            handle_debug_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[CMD]", 5) == 0) {
+                            handle_cmd_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[MGMT]", 6) == 0) {
+                            handle_mgmt_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[DATA]", 6) == 0) {
+                            handle_data_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "[HOP]", 5) == 0) {
+                            handle_hop_response(worker, line_buffer);
+                        }
+                        else if(strncmp(line_buffer, "RAW UART RX:", 12) == 0 ||
+                                strncmp(line_buffer, "Received Command:", 17) == 0 ||
+                                strncmp(line_buffer, "SCAN COMMAND", 12) == 0) {
+                            // These are our debug messages from Arduino - handle specially
+                            handle_debug_response(worker, line_buffer);
+                        }
+                        else {
+                            // Generic response - but be more selective
+                            if(strlen(line_buffer) > 3) { // Only process substantial responses
+                                handle_generic_response(worker, line_buffer);
+                            }
+                        }
                     }
                     
-                    // Add to app log
+                    // ALWAYS add to app log for live display (even command echoes)
                     if(worker->app) {
                         evil_bw16_append_log(worker->app, line_buffer);
+                        
+                        // Trigger UART terminal refresh if we're in that scene (but limit frequency)
+                        static uint32_t last_refresh = 0;
+                        uint32_t now = furi_get_tick();
+                        if(now - last_refresh > 500) { // Max 2 refreshes per second
+                            if(worker->app->view_dispatcher) {
+                                // Simply send refresh event - the scene handler will ignore it if not in UART terminal
+                                view_dispatcher_send_custom_event(worker->app->view_dispatcher, EvilBw16EventUartTerminalRefresh);
+                                last_refresh = now;
+                            }
+                        }
                     }
                 }
                 line_pos = 0;
@@ -118,11 +155,13 @@ static void handle_info_response(EvilBw16UartWorker* worker, const char* line) {
         worker->app->scan_in_progress = true;
         FURI_LOG_I("EvilBw16", "Scan results header detected - cleared previous results");
     }
-    // Look for actual scan result lines - they start with a digit after [INFO] 
-    else if(strstr(line, "\t") != NULL && strlen(line) > 7 && 
-            line[7] >= '0' && line[7] <= '9') {
-        // This looks like a scan result line: "[INFO] 0\tSSID\t..."
-        parse_scan_result_line(worker, line);
+    // Look for actual scan result lines - must start with "[INFO] " followed by a digit and tab
+    else if(strncmp(line, "[INFO] ", 7) == 0 && strlen(line) > 8) {
+        const char* after_prefix = line + 7; // Skip "[INFO] "
+        if(after_prefix[0] >= '0' && after_prefix[0] <= '9' && strchr(after_prefix, '\t') != NULL) {
+            // This looks like a scan result line: "[INFO] 0\tSSID\t..."
+            parse_scan_result_line(worker, line);
+        }
     }
     // Scan completion - wait for "Scan results printed" message
     else if(strstr(line, "Scan results printed") != NULL || 
@@ -217,75 +256,97 @@ static void handle_generic_response(EvilBw16UartWorker* worker, const char* line
     FURI_LOG_I("EvilBw16", "Generic: %s", line);
 }
 
-// Parse scan result line like: "[INFO] 0\tATTuPvzvVc_2.4\t38:17:B1:17:B7:C6\t3\t-54\t2.4GHz"
+// Parse scan result line like: "[INFO] 0\tSSID_NAME\tBSSID\tChannel\tRSSI\tFrequency"
 static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line) {
-    if(!worker->app || worker->app->network_count >= EVIL_BW16_MAX_NETWORKS) return;
+    if(!worker || !worker->app) return;
+    if(worker->app->network_count >= EVIL_BW16_MAX_NETWORKS) return;
     
-    // Find the actual data after "[INFO] "
-    const char* ptr = line + 7; // Skip "[INFO] "
+    // Skip "[INFO] " prefix (7 characters)
+    const char* data = line + 7;
     
-    // Parse index first
-    int index = atoi(ptr);
+    // Manual tab parsing without strtok (not available in Flipper API)
+    const char* field_starts[6] = {0}; // index, ssid, bssid, channel, rssi, frequency
+    int field_lengths[6] = {0};
+    int field_count = 0;
     
-    // Find first tab for SSID
-    const char* ssid_start = strchr(ptr, '\t');
-    if(!ssid_start) return;
-    ssid_start++; // Skip tab
+    // Find field boundaries manually
+    const char* current = data;
+    field_starts[field_count] = current;
     
-    // Find second tab for BSSID
-    const char* bssid_start = strchr(ssid_start, '\t');
-    if(!bssid_start) return;
+    while(*current && field_count < 6) {
+        if(*current == '\t' || *current == '\n' || *current == '\r') {
+            field_lengths[field_count] = current - field_starts[field_count];
+            field_count++;
+            
+            if(field_count < 6) {
+                current++; // Skip the tab
+                while(*current == ' ') current++; // Skip any spaces after tab
+                field_starts[field_count] = current;
+            }
+        } else {
+            current++;
+        }
+    }
     
-    // Extract SSID (between first and second tab)
-    int ssid_len = bssid_start - ssid_start;
-    if(ssid_len >= 64) ssid_len = 63; // Clamp to buffer size
+    // Handle the last field if we reached end of string
+    if(field_count < 6 && *current == '\0') {
+        field_lengths[field_count] = current - field_starts[field_count];
+        field_count++;
+    }
     
-    bssid_start++; // Skip tab
-    
-    // Find third tab for channel
-    const char* channel_start = strchr(bssid_start, '\t');
-    if(!channel_start) return;
-    
-    // Extract BSSID
-    int bssid_len = channel_start - bssid_start;
-    if(bssid_len >= 18) bssid_len = 17; // Clamp to buffer size
-    
-    channel_start++; // Skip tab
-    
-    // Parse channel
-    int channel = atoi(channel_start);
-    
-    // Find fourth tab for RSSI
-    const char* rssi_start = strchr(channel_start, '\t');
-    if(!rssi_start) return;
-    rssi_start++; // Skip tab
-    
-    // Parse RSSI
-    int rssi = atoi(rssi_start);
-    
-    // Find fifth tab for frequency
-    const char* freq_start = strchr(rssi_start, '\t');
-    if(!freq_start) return;
-    freq_start++; // Skip tab
+    // Need at least 5 fields (index, ssid, bssid, channel, rssi)
+    if(field_count < 5) {
+        FURI_LOG_W("EvilBw16", "Invalid scan line, only %d fields: %s", field_count, line);
+        return;
+    }
     
     // Store network data
     int network_idx = worker->app->network_count;
     EvilBw16Network* network = &worker->app->networks[network_idx];
     
-    // Copy SSID
-    strncpy(network->ssid, ssid_start, ssid_len);
-    network->ssid[ssid_len] = '\0';
+    // Helper function to convert field to string
+    char temp_field[128];
     
-    // Copy BSSID
-    strncpy(network->bssid, bssid_start, bssid_len);
-    network->bssid[bssid_len] = '\0';
+    // Parse index (field 0)
+    int len = (field_lengths[0] < 127) ? field_lengths[0] : 127;
+    strncpy(temp_field, field_starts[0], len);
+    temp_field[len] = '\0';
+    network->index = atoi(temp_field);
     
-    network->channel = channel;
-    network->rssi = rssi;
-    network->index = index;
+    // Copy SSID (field 1)
+    len = (field_lengths[1] < (int)(sizeof(network->ssid) - 1)) ? field_lengths[1] : (int)(sizeof(network->ssid) - 1);
+    strncpy(network->ssid, field_starts[1], len);
+    network->ssid[len] = '\0';
     
-    // Determine band from frequency
-    if(strstr(freq_start, "5GHz")) {
+    // Copy BSSID (field 2)
+    len = (field_lengths[2] < (int)(sizeof(network->bssid) - 1)) ? field_lengths[2] : (int)(sizeof(network->bssid) - 1);
+    strncpy(network->bssid, field_starts[2], len);
+    network->bssid[len] = '\0';
+    
+    // Parse channel (field 3)
+    len = (field_lengths[3] < 127) ? field_lengths[3] : 127;
+    strncpy(temp_field, field_starts[3], len);
+    temp_field[len] = '\0';
+    network->channel = atoi(temp_field);
+    
+    // Parse RSSI (field 4)
+    len = (field_lengths[4] < 127) ? field_lengths[4] : 127;
+    strncpy(temp_field, field_starts[4], len);
+    temp_field[len] = '\0';
+    network->rssi = atoi(temp_field);
+    
+    // Determine band from frequency field or channel number
+    if(field_count >= 6 && field_lengths[5] > 0) {
+        len = (field_lengths[5] < 127) ? field_lengths[5] : 127;
+        strncpy(temp_field, field_starts[5], len);
+        temp_field[len] = '\0';
+        
+        if(strstr(temp_field, "5GHz")) {
+            network->band = EvilBw16Band5GHz;
+        } else {
+            network->band = EvilBw16Band24GHz;
+        }
+    } else if(network->channel >= 36) {
         network->band = EvilBw16Band5GHz;
     } else {
         network->band = EvilBw16Band24GHz;
@@ -293,8 +354,9 @@ static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line)
     
     worker->app->network_count++;
     
-    FURI_LOG_I("EvilBw16", "Parsed network %d: %s (%s) Ch:%d RSSI:%d", 
-               network_idx, network->ssid, network->bssid, network->channel, network->rssi);
+    FURI_LOG_I("EvilBw16", "Parsed network %d: '%s' (%s) Ch:%d RSSI:%d %s", 
+               network_idx, network->ssid, network->bssid, network->channel, network->rssi,
+               (network->band == EvilBw16Band5GHz) ? "5GHz" : "2.4GHz");
 }
 
 EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
@@ -304,6 +366,11 @@ EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
     worker->running = true;
     worker->tx_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     worker->rx_stream = furi_stream_buffer_alloc(RX_BUFFER_SIZE, 1);
+    
+    // Initialize echo filtering
+    worker->recent_command_index = 0;
+    memset(worker->recent_commands, 0, sizeof(worker->recent_commands));
+    memset(worker->command_timestamps, 0, sizeof(worker->command_timestamps));
     
     // Get USART serial handle (expansion connector pins 13/14)
     worker->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
@@ -381,11 +448,16 @@ void evil_bw16_uart_tx_string(EvilBw16UartWorker* worker, const char* str) {
 void evil_bw16_uart_send_command(EvilBw16UartWorker* worker, const char* command) {
     if(!worker || !command) return;
     
+    // Store command for echo filtering
+    store_sent_command(worker, command);
+    
     // Add newline to command
     char cmd_with_newline[256];
     snprintf(cmd_with_newline, sizeof(cmd_with_newline), "%s\n", command);
     
     evil_bw16_uart_tx_string(worker, cmd_with_newline);
+    
+    FURI_LOG_I("EvilBw16", "Sent command: %s", command);
 }
 
 bool evil_bw16_uart_read_line(EvilBw16UartWorker* worker, char* buffer, size_t buffer_size, uint32_t timeout_ms) {
@@ -430,4 +502,41 @@ bool evil_bw16_uart_wait_for_response(EvilBw16UartWorker* worker, const char* ex
         // For now, return false - focusing on TX first
     response_buffer[0] = '\0';
     return false;
+}
+
+bool is_command_echo(EvilBw16UartWorker* worker, const char* line) {
+    if(!worker || !line) return false;
+    
+    uint32_t current_time = furi_get_tick();
+    
+    // Check if this line matches any recently sent command
+    for(int i = 0; i < MAX_RECENT_COMMANDS; i++) {
+        if(strlen(worker->recent_commands[i]) > 0) {
+            // Check if command timestamp is within echo timeout
+            if(current_time - worker->command_timestamps[i] < COMMAND_ECHO_TIMEOUT_MS) {
+                // Check if line matches the command (case insensitive)
+                if(strcasecmp(line, worker->recent_commands[i]) == 0) {
+                    FURI_LOG_D("EvilBw16", "Filtered echo: %s", line);
+                    return true;
+                }
+            } else {
+                // Clear old command
+                worker->recent_commands[i][0] = '\0';
+                worker->command_timestamps[i] = 0;
+            }
+        }
+    }
+    
+    return false;
+}
+
+void store_sent_command(EvilBw16UartWorker* worker, const char* command) {
+    if(!worker || !command) return;
+    
+    // Store command in circular buffer
+    strncpy(worker->recent_commands[worker->recent_command_index], command, 63);
+    worker->recent_commands[worker->recent_command_index][63] = '\0';
+    worker->command_timestamps[worker->recent_command_index] = furi_get_tick();
+    
+    worker->recent_command_index = (worker->recent_command_index + 1) % MAX_RECENT_COMMANDS;
 } 

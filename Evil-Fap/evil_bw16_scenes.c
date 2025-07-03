@@ -876,63 +876,61 @@ void evil_bw16_scene_on_enter_uart_terminal(void* context) {
         text_box_set_text(app->text_box, furi_string_get_cstr(app->uart_log_string));
         text_box_set_focus(app->text_box, TextBoxFocusEnd);
         view_dispatcher_switch_to_view(app->view_dispatcher, EvilBw16ViewTextBox);
+        
+        // Note: Live updates are now triggered directly by UART worker when data arrives
     }
 }
 
 bool evil_bw16_scene_on_event_uart_terminal(void* context, SceneManagerEvent event) {
     EvilBw16App* app = context;
-    UNUSED(event);
     
     // Only handle in terminal display mode
     uint32_t state = scene_manager_get_scene_state(app->scene_manager, EvilBw16SceneUartTerminal);
     if(state != 1) return false;
     
-    // Continuously update the display with current log content
-    // The UART worker thread automatically updates app->log_string
-    static uint32_t last_log_size = 0;
-    static uint32_t last_update = 0;
-    uint32_t current_tick = furi_get_tick();
-    
-    // Update every 200ms OR when log size changes (immediate response)
-    size_t current_log_size = furi_string_size(app->log_string);
-    bool should_update = (current_tick - last_update > 200) || (current_log_size != last_log_size);
-    
-    if(should_update) {
-        // Create display string with header + current log content
-        furi_string_reset(app->uart_log_string);
-        furi_string_printf(app->uart_log_string, "=== UART TERMINAL ===\n");
-        furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO 13↔14\n");
-        furi_string_cat_printf(app->uart_log_string, "BW16 PB2←TX  PB1→RX\n");
-        furi_string_cat_printf(app->uart_log_string, "Status: ACTIVE\n\n");
+    // Handle refresh timer event
+    if(event.type == SceneManagerEventTypeCustom && event.event == EvilBw16EventUartTerminalRefresh) {
+        // Only update if log actually changed to reduce CPU usage
+        static size_t last_log_size = 0;
+        size_t current_log_size = furi_string_size(app->log_string);
         
-        // Add current log content (which is updated by UART worker)
-        if(furi_string_size(app->log_string) > 0) {
-            furi_string_cat(app->uart_log_string, app->log_string);
-        } else {
-            furi_string_cat_printf(app->uart_log_string, "[Waiting for UART data...]\n");
-        }
-        
-        // Limit total size to prevent memory issues
-        if(furi_string_size(app->uart_log_string) > EVIL_BW16_TEXT_BOX_STORE_SIZE - 512) {
-            // Keep header and recent content
-            const char* header = "=== UART TERMINAL ===\n115200 baud, GPIO 13↔14\nBW16 PB2←TX  PB1→RX\nStatus: ACTIVE\n\n[...truncated...]\n";
-            size_t keep_size = EVIL_BW16_TEXT_BOX_STORE_SIZE / 2;
+        if(current_log_size != last_log_size) {
+            // Create display string with header + current log content
+            furi_string_reset(app->uart_log_string);
+            furi_string_printf(app->uart_log_string, "=== UART TERMINAL ===\n");
+            furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO 13↔14\n");
+            furi_string_cat_printf(app->uart_log_string, "BW16 PB2←TX  PB1→RX\n");
+            furi_string_cat_printf(app->uart_log_string, "Status: ACTIVE\n\n");
             
-            // Get recent content from app->log_string
-            size_t log_size = furi_string_size(app->log_string);
-            if(log_size > keep_size) {
-                furi_string_set_str(app->uart_log_string, header);
-                const char* recent_content = furi_string_get_cstr(app->log_string) + (log_size - keep_size);
-                furi_string_cat_str(app->uart_log_string, recent_content);
+            // Add current log content (which is updated by UART worker)
+            if(current_log_size > 0) {
+                furi_string_cat(app->uart_log_string, app->log_string);
+            } else {
+                furi_string_cat_printf(app->uart_log_string, "[Waiting for UART data...]\n");
             }
+            
+            // Limit total size to prevent memory issues
+            if(furi_string_size(app->uart_log_string) > EVIL_BW16_TEXT_BOX_STORE_SIZE - 512) {
+                // Keep header and recent content
+                const char* header = "=== UART TERMINAL ===\n115200 baud, GPIO 13↔14\nBW16 PB2←TX  PB1→RX\nStatus: ACTIVE\n\n[...truncated...]\n";
+                size_t keep_size = EVIL_BW16_TEXT_BOX_STORE_SIZE / 2;
+                
+                // Get recent content from app->log_string
+                if(current_log_size > keep_size) {
+                    furi_string_set_str(app->uart_log_string, header);
+                    const char* recent_content = furi_string_get_cstr(app->log_string) + (current_log_size - keep_size);
+                    furi_string_cat_str(app->uart_log_string, recent_content);
+                }
+            }
+            
+            // Update the display
+            text_box_set_text(app->text_box, furi_string_get_cstr(app->uart_log_string));
+            text_box_set_focus(app->text_box, TextBoxFocusEnd);
+            
+            last_log_size = current_log_size;
         }
         
-        // Update the display
-        text_box_set_text(app->text_box, furi_string_get_cstr(app->uart_log_string));
-        text_box_set_focus(app->text_box, TextBoxFocusEnd);
-        
-        last_update = current_tick;
-        last_log_size = current_log_size;
+        return true;
     }
     
     return false;

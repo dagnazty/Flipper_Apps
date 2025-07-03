@@ -206,6 +206,7 @@ typedef enum {
     EvilBw16EventSnifferStopped,
     EvilBw16EventPacketReceived,
     EvilBw16EventConfigUpdate,
+    EvilBw16EventUartTerminalRefresh,
     EvilBw16EventBack,
     EvilBw16EventExit,
 } EvilBw16Event;

@@ -65,6 +65,8 @@ static bool evil_bw16_back_event_callback(void* context) {
     return scene_manager_handle_back_event(app->scene_manager);
 }
 
+
+
 EvilBw16App* evil_bw16_app_alloc(void) {
     EvilBw16App* app = malloc(sizeof(EvilBw16App));
     
