@@ -23,6 +23,7 @@ enum EvilBw16ConfigMenuIndex {
     EvilBw16ConfigMenuIndexStartChannel,
     EvilBw16ConfigMenuIndexLedEnabled,
     EvilBw16ConfigMenuIndexDebugMode,
+    EvilBw16ConfigMenuIndexGpioPins,
     EvilBw16ConfigMenuIndexSendToDevice,
 };
 
@@ -288,7 +289,8 @@ bool evil_bw16_scene_on_event_scanner(void* context, SceneManagerEvent event) {
             app->networks[0].selected = false;
             
             strcpy(app->networks[1].ssid, "BW16 Not Responding");
-            strcpy(app->networks[1].bssid, "Pin 13/14");
+            const char* pins = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? "Pin 13/14" : "Pin 15/16";
+            strcpy(app->networks[1].bssid, pins);
             app->networks[1].channel = 36;
             app->networks[1].rssi = -99;
             app->networks[1].band = EvilBw16Band5GHz;
@@ -686,6 +688,9 @@ void evil_bw16_scene_on_enter_config(void* context) {
     snprintf(temp_str, sizeof(temp_str), "Debug Mode: %s", app->config.debug_mode ? "Yes" : "No");
     submenu_add_item(app->submenu, temp_str, EvilBw16ConfigMenuIndexDebugMode, evil_bw16_submenu_callback_attacks, app);
     
+    snprintf(temp_str, sizeof(temp_str), "GPIO Pins: %s", app->config.gpio_pins == EvilBw16GpioPins13_14 ? "13/14" : "15/16");
+    submenu_add_item(app->submenu, temp_str, EvilBw16ConfigMenuIndexGpioPins, evil_bw16_submenu_callback_attacks, app);
+    
     submenu_add_item(app->submenu, "Send Config to Device", EvilBw16ConfigMenuIndexSendToDevice, evil_bw16_submenu_callback_attacks, app);
     
     view_dispatcher_switch_to_view(app->view_dispatcher, EvilBw16ViewMainMenu);
@@ -777,6 +782,27 @@ bool evil_bw16_scene_on_event_config(void* context, SceneManagerEvent event) {
                 evil_bw16_scene_on_enter_config(app);
                 return true;
                 
+            case EvilBw16ConfigMenuIndexGpioPins:
+                // Toggle GPIO pins setting
+                app->config.gpio_pins = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? EvilBw16GpioPins15_16 : EvilBw16GpioPins13_14;
+                
+                // Show loading popup while restarting UART
+                evil_bw16_show_popup(app, "Switching GPIO", "Restarting UART...");
+                
+                // Restart UART worker with new GPIO configuration
+                evil_bw16_uart_restart(app);
+                
+                // Show success popup
+                const char* pin_text = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? "13/14" : "15/16";
+                char success_msg[64];
+                snprintf(success_msg, sizeof(success_msg), "Switched to GPIO %s", pin_text);
+                evil_bw16_show_popup(app, "GPIO Changed", success_msg);
+                
+                // Refresh menu to show updated value
+                evil_bw16_scene_on_exit_config(app);
+                evil_bw16_scene_on_enter_config(app);
+                return true;
+                
             case EvilBw16ConfigMenuIndexSendToDevice:
                 // Send all config settings to BW16
                 evil_bw16_send_config_to_device(app);
@@ -803,8 +829,13 @@ void evil_bw16_scene_on_enter_device_info(void* context) {
     furi_string_cat_printf(app->text_box_string, "=== HARDWARE SETUP ===\n\n");
     furi_string_cat_printf(app->text_box_string, "BW16 Module Connections:\n");
     furi_string_cat_printf(app->text_box_string, "Pin 1  (5V)  -> BW16 5V\n");
-    furi_string_cat_printf(app->text_box_string, "Pin 13 (TX)  -> BW16 PB1 (RX)\n");
-    furi_string_cat_printf(app->text_box_string, "Pin 14 (RX)  -> BW16 PB2 (TX)\n");
+    if(app->config.gpio_pins == EvilBw16GpioPins13_14) {
+        furi_string_cat_printf(app->text_box_string, "Pin 13 (TX)  -> BW16 PB1 (RX)\n");
+        furi_string_cat_printf(app->text_box_string, "Pin 14 (RX)  -> BW16 PB2 (TX)\n");
+    } else {
+        furi_string_cat_printf(app->text_box_string, "Pin 15 (TX)  -> BW16 PB1 (RX)\n");
+        furi_string_cat_printf(app->text_box_string, "Pin 16 (RX)  -> BW16 PB2 (TX)\n");
+    }
     furi_string_cat_printf(app->text_box_string, "Pin 18 (GND) -> BW16 GND\n\n");
     
     furi_string_cat_printf(app->text_box_string, "=== HOW TO USE ===\n\n");
@@ -862,7 +893,8 @@ void evil_bw16_scene_on_enter_uart_terminal(void* context) {
         // Initialize UART log with header
         furi_string_reset(app->uart_log_string);
         furi_string_printf(app->uart_log_string, "=== UART TERMINAL ===\n");
-        furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO 13↔14\n");
+        const char* gpio_pins = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? "13↔14" : "15↔16";
+        furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO %s\n", gpio_pins);
         furi_string_cat_printf(app->uart_log_string, "BW16 PB2←TX  PB1→RX\n");
         furi_string_cat_printf(app->uart_log_string, "Status: LISTENING...\n\n");
         
@@ -898,7 +930,8 @@ bool evil_bw16_scene_on_event_uart_terminal(void* context, SceneManagerEvent eve
             // Create display string with header + current log content
             furi_string_reset(app->uart_log_string);
             furi_string_printf(app->uart_log_string, "=== UART TERMINAL ===\n");
-            furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO 13↔14\n");
+            const char* gpio_pins = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? "13↔14" : "15↔16";
+            furi_string_cat_printf(app->uart_log_string, "115200 baud, GPIO %s\n", gpio_pins);
             furi_string_cat_printf(app->uart_log_string, "BW16 PB2←TX  PB1→RX\n");
             furi_string_cat_printf(app->uart_log_string, "Status: ACTIVE\n\n");
             
@@ -912,7 +945,9 @@ bool evil_bw16_scene_on_event_uart_terminal(void* context, SceneManagerEvent eve
             // Limit total size to prevent memory issues
             if(furi_string_size(app->uart_log_string) > EVIL_BW16_TEXT_BOX_STORE_SIZE - 512) {
                 // Keep header and recent content
-                const char* header = "=== UART TERMINAL ===\n115200 baud, GPIO 13↔14\nBW16 PB2←TX  PB1→RX\nStatus: ACTIVE\n\n[...truncated...]\n";
+                const char* gpio_pins_str = (app->config.gpio_pins == EvilBw16GpioPins13_14) ? "13↔14" : "15↔16";
+                char header[256];
+                snprintf(header, sizeof(header), "=== UART TERMINAL ===\n115200 baud, GPIO %s\nBW16 PB2←TX  PB1→RX\nStatus: ACTIVE\n\n[...truncated...]\n", gpio_pins_str);
                 size_t keep_size = EVIL_BW16_TEXT_BOX_STORE_SIZE / 2;
                 
                 // Get recent content from app->log_string

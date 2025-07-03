@@ -81,6 +81,7 @@ EvilBw16App* evil_bw16_app_alloc(void) {
     app->config.scan_cycles = false;
     app->config.led_enabled = true;
     app->config.debug_mode = false;
+    app->config.gpio_pins = EvilBw16GpioPins13_14;  // Default to pins 13/14
     
     // Initialize GUI
     app->gui = furi_record_open(RECORD_GUI);

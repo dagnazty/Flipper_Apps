@@ -372,15 +372,31 @@ EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
     memset(worker->recent_commands, 0, sizeof(worker->recent_commands));
     memset(worker->command_timestamps, 0, sizeof(worker->command_timestamps));
     
-    // Get USART serial handle (expansion connector pins 13/14)
-    worker->serial_handle = furi_hal_serial_control_acquire(FuriHalSerialIdUsart);
+    // Get serial handle based on GPIO pin configuration
+    FuriHalSerialId serial_id;
+    const char* pin_description;
+    
+    if(app->config.gpio_pins == EvilBw16GpioPins13_14) {
+        serial_id = FuriHalSerialIdUsart;  // Pins 13/14
+        pin_description = "USART (pins 13/14)";
+    } else {
+        serial_id = FuriHalSerialIdLpuart;  // Pins 15/16
+        pin_description = "LPUART (pins 15/16)";
+    }
+    
+    FURI_LOG_I("EvilBw16", "Attempting to acquire %s", pin_description);
+    
+    worker->serial_handle = furi_hal_serial_control_acquire(serial_id);
     if(!worker->serial_handle) {
-        FURI_LOG_E("EvilBw16", "Failed to acquire serial handle");
+        FURI_LOG_E("EvilBw16", "Failed to acquire serial handle for %s", pin_description);
+        FURI_LOG_E("EvilBw16", "Serial ID requested: %d", (int)serial_id);
         furi_stream_buffer_free(worker->rx_stream);
         furi_mutex_free(worker->tx_mutex);
         free(worker);
         return NULL;
     }
+    
+    FURI_LOG_I("EvilBw16", "Successfully acquired serial handle for %s", pin_description);
     
     // Initialize UART
     furi_hal_serial_init(worker->serial_handle, BAUDRATE);
@@ -394,10 +410,44 @@ EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
     
     uart_worker = worker;
     
-    FURI_LOG_I("EvilBw16", "Hardware UART initialized on USART at %u baud", BAUDRATE);
+    FURI_LOG_I("EvilBw16", "Hardware UART initialized on %s at %u baud", pin_description, BAUDRATE);
     FURI_LOG_I("EvilBw16", "UART worker thread started");
     
     return worker;
+}
+
+void evil_bw16_uart_restart(EvilBw16App* app) {
+    if(!app) return;
+    
+    FURI_LOG_I("EvilBw16", "Restarting UART worker with new GPIO configuration...");
+    
+    // Stop current UART worker if it exists
+    if(app->uart_worker) {
+        evil_bw16_uart_free(app->uart_worker);
+        app->uart_worker = NULL;
+    }
+    
+    // Clear any pending data in the stream buffer
+    if(app->uart_rx_stream) {
+        furi_stream_buffer_reset(app->uart_rx_stream);
+    }
+    
+    // Clear logs to show fresh start
+    evil_bw16_clear_log(app);
+    
+    // Reinitialize UART worker with new configuration
+    app->uart_worker = evil_bw16_uart_init(app);
+    
+    if(app->uart_worker) {
+        FURI_LOG_I("EvilBw16", "UART worker restarted successfully");
+        // Add small delay to ensure proper initialization
+        furi_delay_ms(100);
+        
+        // Send a test command to verify communication
+        evil_bw16_uart_send_command(app->uart_worker, "info");
+    } else {
+        FURI_LOG_E("EvilBw16", "Failed to restart UART worker");
+    }
 }
 
 void evil_bw16_uart_free(EvilBw16UartWorker* worker) {

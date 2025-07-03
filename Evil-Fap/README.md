@@ -38,8 +38,8 @@ The Evil BW16 Controller allows you to control an Evil-BW16 WiFi deauther module
 │   Flipper Zero  │    │   BW16 Module   │
 ├─────────────────┤    ├─────────────────┤
 │ Pin 1  (5V)     │────│ 5V              │
-│ Pin 13 (TX)     │────│ PB1 (RX)        │
-│ Pin 14 (RX)     │────│ PB2 (TX)        │
+│ Pin 13/15 (TX)  │────│ PB1 (RX)        │
+│ Pin 14/16 (RX)  │────│ PB2 (TX)        │
 │ Pin 18 (GND)    │────│ GND             │
 └─────────────────┘    └─────────────────┘
 ```
@@ -119,6 +119,7 @@ Interactive settings menu with live editing:
 - **Start Channel** (1-14) - Starting channel for scans
 - **LED Enabled** (Yes/No) - Toggle LED indicators
 - **Debug Mode** (Yes/No) - Enable debug output
+- **GPIO Pins** (13/14 or 15/16) - Select UART pin configuration (applies immediately)
 - **Send Config to Device** - Apply all settings to BW16
 
 #### 5. UART Terminal
@@ -148,7 +149,7 @@ The app communicates with the BW16 module using these commands:
 ## App Features
 
 ### Robust UART Communication
-- Hardware UART at 115200 baud on GPIO pins 13/14
+- Hardware UART at 115200 baud on GPIO pins 13/14 or 15/16 (configurable)
 - Real-time parsing of all BW16 response types
 - Handles SSIDs with spaces and special characters
 - Automatic network data extraction and storage
@@ -168,7 +169,7 @@ The app communicates with the BW16 module using these commands:
 ## Troubleshooting
 
 ### Connection Issues
-- Verify wiring: Pin 1→5V, Pin 13→PB1, Pin 14→PB2, Pin 18→GND
+- Verify wiring: Pin 1→5V, Pin 13/15→PB1, Pin 14/16→PB2, Pin 18→GND
 - Check 115200 baud rate communication
 - Ensure BW16 module has Evil-BW16 firmware flashed
 - Try UART terminal to test basic communication

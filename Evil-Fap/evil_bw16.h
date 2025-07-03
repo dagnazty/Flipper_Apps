@@ -105,6 +105,12 @@ typedef enum {
     EvilBw16Band5GHz,
 } EvilBw16Band;
 
+// GPIO pin selection for UART
+typedef enum {
+    EvilBw16GpioPins13_14 = 0,  // USART (pins 13/14)
+    EvilBw16GpioPins15_16 = 1,  // LPUART (pins 15/16)
+} EvilBw16GpioPins;
+
 // WiFi Network structure
 typedef struct {
     uint8_t index;
@@ -125,6 +131,7 @@ typedef struct {
     bool scan_cycles;
     bool led_enabled;
     bool debug_mode;
+    EvilBw16GpioPins gpio_pins;  // GPIO pin selection
 } EvilBw16Config;
 
 // Attack state
@@ -258,6 +265,7 @@ void evil_bw16_scene_on_exit_uart_terminal(void* context);
 // UART Worker Functions
 EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app);
 void evil_bw16_uart_free(EvilBw16UartWorker* worker);
+void evil_bw16_uart_restart(EvilBw16App* app);
 void evil_bw16_uart_tx(EvilBw16UartWorker* worker, const uint8_t* data, size_t len);
 void evil_bw16_uart_tx_string(EvilBw16UartWorker* worker, const char* str);
 void evil_bw16_uart_send_command(EvilBw16UartWorker* worker, const char* command);
