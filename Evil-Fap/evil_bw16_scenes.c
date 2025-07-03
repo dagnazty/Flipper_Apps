@@ -242,14 +242,27 @@ void evil_bw16_scene_on_enter_scanner(void* context) {
     // Show loading screen for a few seconds, then show fake results
     evil_bw16_show_loading(app, "Scanning WiFi networks...");
     
-    // Clear previous scan results
+    // Clear previous scan results and selections completely
     app->network_count = 0;
     app->scan_in_progress = true;
-    memset(app->networks, 0, sizeof(app->networks));
+    
+    // Explicitly clear all networks and reset selection state
+    for(int i = 0; i < EVIL_BW16_MAX_NETWORKS; i++) {
+        memset(&app->networks[i], 0, sizeof(EvilBw16Network));
+        app->networks[i].selected = false;
+        app->networks[i].index = i;         // Internal array index
+        app->networks[i].device_index = i;  // Will be set properly by UART parser
+    }
+    
+    // Clear attack state targets since networks are changing
+    app->attack_state.num_targets = 0;
+    memset(app->attack_state.target_indices, 0, sizeof(app->attack_state.target_indices));
     
     // Clear debug log at start of new scan
     debug_clear_log();
     debug_write_to_sd("=== NEW SCAN STARTED ===");
+    
+    FURI_LOG_I("EvilBw16", "Scanner: Cleared %d networks and all selections", EVIL_BW16_MAX_NETWORKS);
     
     // Send scan command - UART worker will handle all parsing
     evil_bw16_send_scan_command(app);
@@ -338,7 +351,7 @@ void evil_bw16_scene_on_enter_scanner_results(void* context) {
                 "[%02d] %s\n"
                 "     %s\n"
                 "     Ch:%d  %ddBm  %s\n\n",
-                i, 
+                i + 1,  // Show 1-based indexing consistently
                 app->networks[i].ssid,
                 app->networks[i].bssid,
                 app->networks[i].channel,
@@ -454,7 +467,7 @@ void evil_bw16_scene_on_enter_attack_config(void* context) {
         for(uint8_t i = 0; i < app->attack_state.num_targets; i++) {
             uint8_t idx = app->attack_state.target_indices[i];
             if(idx < app->network_count) {
-                furi_string_cat_printf(app->text_box_string, "[%02d] %s\n", idx, app->networks[idx].ssid);
+                furi_string_cat_printf(app->text_box_string, "[%02d] %s\n", idx + 1, app->networks[idx].ssid);
             }
         }
     } else {
@@ -495,25 +508,50 @@ void evil_bw16_scene_on_enter_sniffer(void* context) {
         submenu_add_item(app->submenu, "No Networks Found", 0, NULL, app);
         submenu_add_item(app->submenu, "Run WiFi Scan First", 0, NULL, app);
     } else {
-        // Show all available networks
+        // Show all available networks with improved formatting
         for(uint8_t i = 0; i < app->network_count; i++) {
-            char menu_text[80];
-            char status = app->networks[i].selected ? '*' : ' ';
+            char menu_text[100];
+            const char* status = app->networks[i].selected ? "✓" : "○";
             char band_str[8];
             strcpy(band_str, (app->networks[i].band == EvilBw16Band5GHz) ? "5G" : "2.4G");
             
-            snprintf(menu_text, sizeof(menu_text), "[%c] %s (%s)", 
+            // Truncate long SSIDs for better display
+            char ssid_display[32];
+            if(strlen(app->networks[i].ssid) > 28) {
+                strncpy(ssid_display, app->networks[i].ssid, 25);
+                ssid_display[25] = '.';
+                ssid_display[26] = '.';
+                ssid_display[27] = '.';
+                ssid_display[28] = '\0';
+            } else {
+                strcpy(ssid_display, app->networks[i].ssid);
+            }
+            
+            snprintf(menu_text, sizeof(menu_text), "%s [%02d] %s (%s)", 
                 status, 
-                app->networks[i].ssid, 
+                i + 1,  // Show 1-based index to match what we send to device
+                ssid_display, 
                 band_str);
             
             submenu_add_item(app->submenu, menu_text, i, evil_bw16_submenu_callback_sniffer, app);
+            
+            FURI_LOG_D("EvilBw16", "Menu[%d]: '%s' -> device_idx=%d", 
+                i, ssid_display, app->networks[i].device_index);
         }
         
-        // Add control options
+        // Count selected targets for status display
+        int selected_targets = 0;
+        for(uint8_t i = 0; i < app->network_count; i++) {
+            if(app->networks[i].selected) selected_targets++;
+        }
+        
+        // Add control options with status
         submenu_add_item(app->submenu, "Clear All Targets", EvilBw16TargetMenuIndexClearAll, evil_bw16_submenu_callback_sniffer, app);
         submenu_add_item(app->submenu, "Select All Targets", EvilBw16TargetMenuIndexSelectAll, evil_bw16_submenu_callback_sniffer, app);
-        submenu_add_item(app->submenu, "Confirm Targets", EvilBw16TargetMenuIndexConfirm, evil_bw16_submenu_callback_sniffer, app);
+        
+        char confirm_text[64];
+        snprintf(confirm_text, sizeof(confirm_text), "Confirm Targets (%d selected)", selected_targets);
+        submenu_add_item(app->submenu, confirm_text, EvilBw16TargetMenuIndexConfirm, evil_bw16_submenu_callback_sniffer, app);
     }
     
     view_dispatcher_switch_to_view(app->view_dispatcher, EvilBw16ViewMainMenu);
@@ -525,14 +563,29 @@ bool evil_bw16_scene_on_event_sniffer(void* context, SceneManagerEvent event) {
     if(event.type == SceneManagerEventTypeCustom) {
         uint32_t selection = event.event;
         
+        // Add debugging for selection issues
+        FURI_LOG_I("EvilBw16", "Target selection: event=%lu, network_count=%d", selection, app->network_count);
+        
         if(selection < app->network_count) {
-            // Toggle selection of individual network
-            app->networks[selection].selected = !app->networks[selection].selected;
-            
-            // Refresh the scene by re-entering it (without adding to stack)
-            evil_bw16_scene_on_exit_sniffer(app);
-            evil_bw16_scene_on_enter_sniffer(app);
-            return true;
+            // Validate the network index before toggling
+            if(app->networks[selection].ssid[0] != '\0') {  // Ensure network exists
+                bool was_selected = app->networks[selection].selected;
+                app->networks[selection].selected = !was_selected;
+                
+                FURI_LOG_I("EvilBw16", "TOGGLE: User clicked menu[%lu] '%s' (device_idx=%d): %s -> %s", 
+                    selection, 
+                    app->networks[selection].ssid,
+                    app->networks[selection].device_index,
+                    was_selected ? "selected" : "unselected",
+                    app->networks[selection].selected ? "selected" : "unselected");
+                
+                // Refresh the scene by re-entering it (without adding to stack)
+                evil_bw16_scene_on_exit_sniffer(app);
+                evil_bw16_scene_on_enter_sniffer(app);
+                return true;
+            } else {
+                FURI_LOG_W("EvilBw16", "Invalid network selection: index %lu has empty SSID", selection);
+            }
         }
         
         switch(selection) {
@@ -557,17 +610,23 @@ bool evil_bw16_scene_on_event_sniffer(void* context, SceneManagerEvent event) {
                 return true;
                 
             case EvilBw16TargetMenuIndexConfirm:
-                // Build target list string and send to Arduino
+                // Build target list string and send to Arduino using device indices
                 FuriString* target_string = furi_string_alloc();
                 bool first = true;
+                int selected_count = 0;
                 
                 for(uint8_t i = 0; i < app->network_count; i++) {
                     if(app->networks[i].selected) {
                         if(!first) {
                             furi_string_cat_str(target_string, ",");
                         }
-                        furi_string_cat_printf(target_string, "%d", i);
+                        // FIX: BW16 device uses 1-based indexing, so add 1 to our 0-based menu index
+                        furi_string_cat_printf(target_string, "%d", i + 1);
                         first = false;
+                        selected_count++;
+                        
+                        FURI_LOG_I("EvilBw16", "CONFIRM: User selected menu[%d]: '%s' -> sending 1-based index=%d", 
+                            i, app->networks[i].ssid, i + 1);
                     }
                 }
                 
@@ -575,6 +634,10 @@ bool evil_bw16_scene_on_event_sniffer(void* context, SceneManagerEvent event) {
                     // Send target command to Arduino
                     FuriString* set_target_cmd = furi_string_alloc();
                     furi_string_printf(set_target_cmd, "set target %s", furi_string_get_cstr(target_string));
+                    
+                    FURI_LOG_I("EvilBw16", "Sending target command: '%s' (%d targets)", 
+                        furi_string_get_cstr(set_target_cmd), selected_count);
+                    
                     evil_bw16_send_command(app, furi_string_get_cstr(set_target_cmd));
                     furi_string_free(set_target_cmd);
                     

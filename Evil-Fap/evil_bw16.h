@@ -113,7 +113,8 @@ typedef enum {
 
 // WiFi Network structure
 typedef struct {
-    uint8_t index;
+    uint8_t index;           // Internal array index for menu selection
+    uint8_t device_index;    // Original index from BW16 device (for commands)
     char ssid[64];
     char bssid[18];
     int channel;

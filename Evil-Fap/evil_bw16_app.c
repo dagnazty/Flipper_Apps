@@ -196,13 +196,18 @@ void evil_bw16_show_popup(EvilBw16App* app, const char* header, const char* text
 }
 
 void evil_bw16_append_log(EvilBw16App* app, const char* text) {
+    // Skip empty or very short lines to reduce spam from WebUI
+    if(!text || strlen(text) < 3) return;
+    
     furi_string_cat_printf(app->log_string, "%s\n", text);
     
-    // Limit log size
-    if(furi_string_size(app->log_string) > EVIL_BW16_TEXT_BOX_STORE_SIZE - 256) {
-        // Remove first 1/4 of the log
-        size_t remove_size = furi_string_size(app->log_string) / 4;
-        furi_string_right(app->log_string, furi_string_size(app->log_string) - remove_size);
+    // More aggressive log size management for high-volume WebUI data
+    size_t current_size = furi_string_size(app->log_string);
+    if(current_size > EVIL_BW16_TEXT_BOX_STORE_SIZE - 512) {
+        // Remove first half of the log to prevent memory issues
+        size_t remove_size = current_size / 2;
+        furi_string_right(app->log_string, current_size - remove_size);
+        FURI_LOG_D("EvilBw16", "Log trimmed due to size, removed %zu bytes", remove_size);
     }
 }
 

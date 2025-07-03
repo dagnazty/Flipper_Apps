@@ -30,6 +30,8 @@ struct EvilBw16UartWorker {
     char recent_commands[MAX_RECENT_COMMANDS][64];
     uint32_t command_timestamps[MAX_RECENT_COMMANDS];
     int recent_command_index;
+    char* line_buffer;  // Move line buffer to heap to reduce stack usage
+    uint32_t last_log_update;  // Rate limiting for high-volume WebUI data
 };
 
 static EvilBw16UartWorker* uart_worker = NULL;
@@ -51,8 +53,9 @@ static void uart_on_irq_cb(FuriHalSerialHandle* handle, FuriHalSerialRxEvent eve
 static int32_t uart_worker_thread(void* context) {
     EvilBw16UartWorker* worker = (EvilBw16UartWorker*)context;
     
-    char line_buffer[256];
+    char* line_buffer = worker->line_buffer;  // Use heap-allocated buffer
     size_t line_pos = 0;
+    const size_t max_line_size = 512;
     
     while(worker->running) {
         uint8_t byte;
@@ -64,10 +67,20 @@ static int32_t uart_worker_thread(void* context) {
                 if(line_pos > 0) {
                     line_buffer[line_pos] = '\0';
                     
-                    // Skip empty lines
+                    // Skip empty lines and filter WebUI spam
                     if(strlen(line_buffer) == 0) {
                         line_pos = 0;
                         continue;
+                    }
+                    
+                    // Filter out WebUI spam patterns to reduce log noise
+                    if(strstr(line_buffer, "WebSocket") != NULL ||
+                       strstr(line_buffer, "HTTP GET") != NULL ||
+                       strstr(line_buffer, "Content-Type:") != NULL ||
+                       strstr(line_buffer, "Connection:") != NULL ||
+                       (line_buffer[0] == '{' && strstr(line_buffer, "\"type\"") != NULL)) {
+                        line_pos = 0;
+                        continue;  // Skip WebUI internal messages
                     }
                     
                     // Process complete line
@@ -117,22 +130,25 @@ static int32_t uart_worker_thread(void* context) {
                     if(worker->app) {
                         evil_bw16_append_log(worker->app, line_buffer);
                         
-                        // Trigger UART terminal refresh if we're in that scene (but limit frequency)
-                        static uint32_t last_refresh = 0;
+                        // Rate limit UI updates for high-volume WebUI data
                         uint32_t now = furi_get_tick();
-                        if(now - last_refresh > 500) { // Max 2 refreshes per second
+                        if(now - worker->last_log_update > 200) { // Max 5 refreshes per second for WebUI data
                             if(worker->app->view_dispatcher) {
                                 // Simply send refresh event - the scene handler will ignore it if not in UART terminal
                                 view_dispatcher_send_custom_event(worker->app->view_dispatcher, EvilBw16EventUartTerminalRefresh);
-                                last_refresh = now;
+                                worker->last_log_update = now;
                             }
                         }
                     }
                 }
                 line_pos = 0;
             }
-            else if(line_pos < sizeof(line_buffer) - 1) {
+            else if(line_pos < max_line_size - 1) {
                 line_buffer[line_pos++] = byte;
+            } else {
+                // Line too long, reset to prevent buffer overflow
+                line_pos = 0;
+                FURI_LOG_W("EvilBw16", "Line buffer overflow, resetting");
             }
         }
     }
@@ -300,6 +316,12 @@ static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line)
         return;
     }
     
+    // Check if we have space for more networks
+    if(worker->app->network_count >= EVIL_BW16_MAX_NETWORKS) {
+        FURI_LOG_W("EvilBw16", "Maximum networks (%d) reached, ignoring additional network", EVIL_BW16_MAX_NETWORKS);
+        return;
+    }
+    
     // Store network data
     int network_idx = worker->app->network_count;
     EvilBw16Network* network = &worker->app->networks[network_idx];
@@ -307,11 +329,20 @@ static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line)
     // Helper function to convert field to string
     char temp_field[128];
     
-    // Parse index (field 0)
+    // Parse device index (field 0) - this is the index from the BW16 device
     int len = (field_lengths[0] < 127) ? field_lengths[0] : 127;
     strncpy(temp_field, field_starts[0], len);
     temp_field[len] = '\0';
-    network->index = atoi(temp_field);
+    int device_index = atoi(temp_field);
+    
+    FURI_LOG_I("EvilBw16", "UART: Parsing field[0]='%s' -> device_index=%d", temp_field, device_index);
+    
+    // Use our internal array index for consistency, but store device index for commands
+    network->index = network_idx;        // Internal array index for menu selection
+    network->device_index = device_index; // Original device index for commands
+    
+    // Initialize selection state
+    network->selected = false;
     
     // Copy SSID (field 1)
     len = (field_lengths[1] < (int)(sizeof(network->ssid) - 1)) ? field_lengths[1] : (int)(sizeof(network->ssid) - 1);
@@ -354,8 +385,8 @@ static void parse_scan_result_line(EvilBw16UartWorker* worker, const char* line)
     
     worker->app->network_count++;
     
-    FURI_LOG_I("EvilBw16", "Parsed network %d: '%s' (%s) Ch:%d RSSI:%d %s", 
-               network_idx, network->ssid, network->bssid, network->channel, network->rssi,
+    FURI_LOG_I("EvilBw16", "Parsed network[%d] (device_idx=%d): '%s' (%s) Ch:%d RSSI:%d %s", 
+               network_idx, device_index, network->ssid, network->bssid, network->channel, network->rssi,
                (network->band == EvilBw16Band5GHz) ? "5GHz" : "2.4GHz");
 }
 
@@ -371,6 +402,17 @@ EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
     worker->recent_command_index = 0;
     memset(worker->recent_commands, 0, sizeof(worker->recent_commands));
     memset(worker->command_timestamps, 0, sizeof(worker->command_timestamps));
+    
+    // Allocate line buffer on heap to reduce stack usage
+    worker->line_buffer = malloc(512);  // Larger buffer for WebUI data
+    if(!worker->line_buffer) {
+        FURI_LOG_E("EvilBw16", "Failed to allocate line buffer");
+        furi_stream_buffer_free(worker->rx_stream);
+        furi_mutex_free(worker->tx_mutex);
+        free(worker);
+        return NULL;
+    }
+    worker->last_log_update = 0;
     
     // Get serial handle based on GPIO pin configuration
     FuriHalSerialId serial_id;
@@ -404,8 +446,8 @@ EvilBw16UartWorker* evil_bw16_uart_init(EvilBw16App* app) {
     // Start async RX
     furi_hal_serial_async_rx_start(worker->serial_handle, uart_on_irq_cb, worker, false);
     
-    // Start worker thread
-    worker->thread = furi_thread_alloc_ex("EvilBw16UartWorker", 1024, uart_worker_thread, worker);
+    // Start worker thread with larger stack for handling high-volume WebUI data
+    worker->thread = furi_thread_alloc_ex("EvilBw16UartWorker", 4096, uart_worker_thread, worker);
     furi_thread_start(worker->thread);
     
     uart_worker = worker;
@@ -423,8 +465,11 @@ void evil_bw16_uart_restart(EvilBw16App* app) {
     
     // Stop current UART worker if it exists
     if(app->uart_worker) {
+        FURI_LOG_I("EvilBw16", "Stopping existing UART worker...");
         evil_bw16_uart_free(app->uart_worker);
         app->uart_worker = NULL;
+        // Small delay to ensure cleanup is complete
+        furi_delay_ms(50);
     }
     
     // Clear any pending data in the stream buffer
@@ -469,6 +514,9 @@ void evil_bw16_uart_free(EvilBw16UartWorker* worker) {
     // Free resources
     furi_stream_buffer_free(worker->rx_stream);
     furi_mutex_free(worker->tx_mutex);
+    if(worker->line_buffer) {
+        free(worker->line_buffer);
+    }
     free(worker);
     
     uart_worker = NULL;
