@@ -20,6 +20,10 @@ The Evil BW16 Controller allows you to control an Evil-BW16 WiFi deauther module
 - **Dual-band Support**: Works with both 2.4GHz and 5GHz networks
 - **Real-time Monitoring**: Live display of attack status and network responses
 
+## Software Rquirements
+
+[Evil-BW16](https://github.com/Evil-Project-Team/Evil-BW16-WebUI/blob/main/Evil-BW16/Evil-BW16.ino)
+
 ## Hardware Requirements
 
 ### BW16 Module (Evil-BW16)
